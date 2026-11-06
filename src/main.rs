@@ -25,6 +25,15 @@ struct PackageUpdate {
     upstream: Option<String>,
 }
 
+#[derive(Clone)]
+struct CommitInfo {
+    sha: String,
+    title: String,
+    author: String,
+    diff: Option<String>,
+    loading_diff: bool,
+}
+
 struct Review {
     omarchy_path: String,
     omarchy_version: String,
@@ -33,7 +42,7 @@ struct Review {
     available_package_version: Option<String>,
     current_commit: Option<String>,
     target_commit: Option<String>,
-    commit_titles: Vec<String>,
+    commits: Vec<CommitInfo>,
     compare_url: Option<String>,
     packages: Vec<PackageUpdate>,
     notice: String,
@@ -41,6 +50,21 @@ struct Review {
 }
 
 impl Review {
+    fn installed_snapshot() -> Self {
+        let omarchy_path =
+            env::var("OMARCHY_PATH").unwrap_or_else(|_| "/usr/share/omarchy".to_owned());
+        let omarchy_version = std::fs::read_to_string(format!("{omarchy_path}/version"))
+            .map(|s| s.trim().to_owned())
+            .unwrap_or_else(|_| "Unavailable".to_owned());
+        let (package_name, installed_package_version) = installed_omarchy_package();
+        let mut review = Self::loading();
+        review.omarchy_path = omarchy_path;
+        review.omarchy_version = omarchy_version;
+        review.package_name = package_name;
+        review.installed_package_version = installed_package_version;
+        review
+    }
+
     fn loading() -> Self {
         Self {
             omarchy_path: env::var("OMARCHY_PATH")
@@ -51,7 +75,7 @@ impl Review {
             available_package_version: None,
             current_commit: None,
             target_commit: None,
-            commit_titles: Vec::new(),
+            commits: Vec::new(),
             compare_url: None,
             packages: Vec::new(),
             notice: "Checking installed and available package versions…".to_owned(),
@@ -86,8 +110,8 @@ impl Review {
             (Some(old), Some(new)) => Some(format!("{OMARCHY_REPO}/compare/{old}...{new}")),
             _ => None,
         };
-        let (commit_titles, compare_error) = match (&current_commit, &target_commit) {
-            (Some(old), Some(new)) => fetch_commit_titles(old, new),
+        let (commits, compare_error) = match (&current_commit, &target_commit) {
+            (Some(old), Some(new)) => fetch_commits(old, new),
             _ => (Vec::new(), None),
         };
 
@@ -120,7 +144,7 @@ impl Review {
             available_package_version,
             current_commit,
             target_commit,
-            commit_titles,
+            commits,
             compare_url,
             packages: enriched,
             notice,
@@ -138,7 +162,7 @@ struct WhatsNew {
 impl WhatsNew {
     fn new(cx: &mut Context<Self>) -> Self {
         let mut view = Self {
-            review: Review::loading(),
+            review: Review::installed_snapshot(),
             action_message: String::new(),
             action_is_error: false,
         };
@@ -162,6 +186,46 @@ impl WhatsNew {
             this.update(cx, |this, cx| {
                 this.review = review;
                 this.action_message = "Review refreshed.".to_owned();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn toggle_commit_diff(&mut self, sha: String, cx: &mut Context<Self>) {
+        let Some(commit) = self
+            .review
+            .commits
+            .iter_mut()
+            .find(|commit| commit.sha == sha)
+        else {
+            return;
+        };
+        if commit.diff.is_some() || commit.loading_diff {
+            commit.diff = None;
+            commit.loading_diff = false;
+            cx.notify();
+            return;
+        }
+        commit.loading_diff = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let fetch_sha = sha.clone();
+            let diff = cx
+                .background_executor()
+                .spawn(async move { fetch_commit_diff(&fetch_sha) })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Some(commit) = this
+                    .review
+                    .commits
+                    .iter_mut()
+                    .find(|commit| commit.sha == sha)
+                {
+                    commit.diff = Some(diff);
+                    commit.loading_diff = false;
+                }
                 cx.notify();
             })
             .ok();
@@ -298,7 +362,7 @@ impl Render for WhatsNew {
                     .child(link_button("Open full GitHub diff", url, cx))
                     .child(div().text_sm().text_color(rgb(MUTED)).child(format!(
                         "{} commits in this source range",
-                        review.commit_titles.len()
+                        review.commits.len()
                     ))),
             );
             let _ = link;
@@ -311,15 +375,52 @@ impl Render for WhatsNew {
             );
         }
 
-        if !review.commit_titles.is_empty() {
+        if !review.commits.is_empty() {
             let mut commits = div().flex().flex_col().gap_1().pt_2();
-            for title in &review.commit_titles {
-                commits = commits.child(
+            for commit in &review.commits {
+                let sha = commit.sha.clone();
+                let short_sha = commit.sha.chars().take(7).collect::<String>();
+                let mut row = div().flex().flex_col().gap_1().py_1().child(
                     div()
-                        .text_sm()
-                        .text_color(rgb(MUTED))
-                        .child(format!("• {title}")),
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_3()
+                        .child(linked_commit_title(&commit.title, &commit.sha, cx))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(MUTED))
+                                .child(commit.author.clone()),
+                        )
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("diff-{short_sha}")))
+                                .text_xs()
+                                .text_color(rgb(ACCENT))
+                                .cursor_pointer()
+                                .child(if commit.loading_diff {
+                                    SharedString::from("Loading…")
+                                } else {
+                                    SharedString::from(short_sha.clone())
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.toggle_commit_diff(sha.clone(), cx)
+                                })),
+                        ),
                 );
+                if let Some(diff) = &commit.diff {
+                    row = row.child(
+                        div()
+                            .p_2()
+                            .rounded_md()
+                            .bg(rgb(BG))
+                            .text_xs()
+                            .text_color(rgb(MUTED))
+                            .child(diff.clone()),
+                    );
+                }
+                commits = commits.child(row);
             }
             omarchy_card = omarchy_card.child(commits);
         }
@@ -459,17 +560,72 @@ fn line(label: impl Into<SharedString>, value: impl Into<SharedString>) -> gpui:
         .child(div().child(value.into()))
 }
 
-fn link_button(label: &'static str, url: String, cx: &mut Context<WhatsNew>) -> impl IntoElement {
+fn link_button(
+    label: impl Into<SharedString>,
+    url: String,
+    cx: &mut Context<WhatsNew>,
+) -> impl IntoElement {
     div()
-        .id(SharedString::from(format!("link-{label}-{url}")))
+        .id(SharedString::from(format!("link-{url}")))
         .px_2()
         .py_1()
         .rounded_md()
         .text_xs()
         .text_color(rgb(ACCENT))
         .cursor_pointer()
+        .child(label.into())
+        .on_click(cx.listener(move |_, _, _, _| open_url(&url)))
+}
+
+fn inline_link(label: String, url: String, cx: &mut Context<WhatsNew>) -> impl IntoElement {
+    div()
+        .id(SharedString::from(format!("inline-link-{url}-{label}")))
+        .text_sm()
+        .text_color(rgb(ACCENT))
+        .cursor_pointer()
         .child(label)
         .on_click(cx.listener(move |_, _, _, _| open_url(&url)))
+}
+
+fn linked_commit_title(title: &str, sha: &str, cx: &mut Context<WhatsNew>) -> impl IntoElement {
+    let mut content = div().flex().flex_row().text_sm();
+    let mut cursor = 0;
+    while let Some(relative) = title[cursor..].find('#') {
+        let start = cursor + relative;
+        let end = title[start + 1..]
+            .find(|c: char| !c.is_ascii_digit())
+            .map_or(title.len(), |n| start + 1 + n);
+        if end == start + 1 || (start > 0 && title.as_bytes()[start - 1].is_ascii_alphanumeric()) {
+            content = content.child(inline_link(
+                title[cursor..start + 1].to_owned(),
+                format!("{OMARCHY_REPO}/commit/{sha}"),
+                cx,
+            ));
+            cursor = start + 1;
+            continue;
+        }
+        if start > cursor {
+            content = content.child(inline_link(
+                title[cursor..start].to_owned(),
+                format!("{OMARCHY_REPO}/commit/{sha}"),
+                cx,
+            ));
+        }
+        content = content.child(inline_link(
+            title[start..end].to_owned(),
+            format!("{OMARCHY_REPO}/issues/{}", &title[start + 1..end]),
+            cx,
+        ));
+        cursor = end;
+    }
+    if cursor < title.len() {
+        content = content.child(inline_link(
+            title[cursor..].to_owned(),
+            format!("{OMARCHY_REPO}/commit/{sha}"),
+            cx,
+        ));
+    }
+    content
 }
 
 fn run(program: &str, args: &[&str]) -> Result<Output, String> {
@@ -540,7 +696,7 @@ fn package_upstream(name: &str) -> Option<String> {
         })
 }
 
-fn fetch_commit_titles(old: &str, new: &str) -> (Vec<String>, Option<String>) {
+fn fetch_commits(old: &str, new: &str) -> (Vec<CommitInfo>, Option<String>) {
     let endpoint = format!("https://api.github.com/repos/omacom/omarchy/compare/{old}...{new}");
     let output = match Command::new("curl")
         .args([
@@ -577,15 +733,80 @@ fn fetch_commit_titles(old: &str, new: &str) -> (Vec<String>, Option<String>) {
     if let Some(message) = json.get("message").and_then(Value::as_str) {
         return (Vec::new(), Some(message.to_owned()));
     }
-    let titles = json
+    let commits = json
         .get("commits")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|commit| commit.pointer("/commit/message").and_then(Value::as_str))
-        .map(|message| message.lines().next().unwrap_or(message).to_owned())
+        .filter_map(|commit| {
+            let message = commit.pointer("/commit/message")?.as_str()?;
+            let sha = commit.get("sha")?.as_str()?.to_owned();
+            let author = commit
+                .pointer("/author/login")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    commit
+                        .pointer("/commit/author/name")
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or("Unknown author")
+                .to_owned();
+            Some(CommitInfo {
+                sha,
+                title: message.lines().next().unwrap_or(message).to_owned(),
+                author,
+                diff: None,
+                loading_diff: false,
+            })
+        })
         .collect();
-    (titles, None)
+    (commits, None)
+}
+
+fn fetch_commit_diff(sha: &str) -> String {
+    let endpoint = format!("https://api.github.com/repos/omacom/omarchy/commits/{sha}");
+    let output = Command::new("curl")
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--max-time",
+            "20",
+            "-H",
+            "User-Agent: whatsnew",
+            "-H",
+            "Accept: application/vnd.github+json",
+            &endpoint,
+        ])
+        .output();
+    let Ok(output) = output else {
+        return "Could not fetch commit diff.".to_owned();
+    };
+    if !output.status.success() {
+        return String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    }
+    let Ok(json) = serde_json::from_slice::<Value>(&output.stdout) else {
+        return "Invalid GitHub response.".to_owned();
+    };
+    let Some(files) = json.get("files").and_then(Value::as_array) else {
+        return "No diff available.".to_owned();
+    };
+    let mut result = String::new();
+    for file in files {
+        if let Some(name) = file.get("filename").and_then(Value::as_str) {
+            result.push_str(&format!("--- {name} ---\n"));
+        }
+        if let Some(patch) = file.get("patch").and_then(Value::as_str) {
+            result.push_str(patch);
+            result.push('\n');
+        }
+    }
+    if result.is_empty() {
+        "GitHub did not provide a text patch for this commit.".to_owned()
+    } else {
+        result
+    }
 }
 
 fn open_url(url: &str) {
