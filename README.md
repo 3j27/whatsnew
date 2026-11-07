@@ -18,5 +18,3 @@ Requirements include Rust/Cargo, the GPUI Linux build dependencies, `pacman-cont
 - Pacman metadata has no standard per-package changelog interface. Package rows therefore show old/new versions and a best-effort upstream URL, not guaranteed release notes.
 - Omarchy source details are compared by commit IDs embedded in package versions. GitHub access is needed to display commit titles; the full compare URL remains clickable if that fetch fails.
 - The update action depends on Omarchy’s `omarchy-launch-floating-terminal-with-presentation` helper being available in the user’s PATH.
-
-The local `vendor-xattr` patch maps Linux’s missing-xattr error to `ENODATA`, working around an upstream transitive GPUI dependency that expects `ENOATTR` in libc.

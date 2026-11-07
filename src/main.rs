@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, SharedString, Window, WindowBounds, WindowOptions, div,
+    App, Bounds, Context, SharedString, Window, WindowBounds, WindowOptions, div,
     prelude::*, px, rgb, size,
 };
 use serde_json::Value;
@@ -820,7 +820,7 @@ fn open_url(url: &str) {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1080.), px(820.)), cx);
         cx.open_window(
             WindowOptions {
