@@ -424,7 +424,12 @@ impl Render for WhatsNew {
             }
             omarchy_card = omarchy_card.child(commits);
         }
-        content = content.child(omarchy_card);
+        let mut updates_columns = div()
+            .flex()
+            .flex_row()
+            .items_start()
+            .gap_4()
+            .child(div().flex_1().child(omarchy_card));
 
         let mut package_card = div()
             .flex()
@@ -458,8 +463,8 @@ impl Render for WhatsNew {
                     .gap_2()
                     .text_xs()
                     .text_color(rgb(MUTED))
-                    .child(div().w(px(250.)).child("PACKAGE"))
-                    .child(div().w(px(230.)).child("INSTALLED → AVAILABLE"))
+                    .child(div().flex_1().child("PACKAGE"))
+                    .child(div().flex_1().child("INSTALLED → AVAILABLE"))
                     .child(div().child("UPSTREAM")),
             );
 
@@ -472,10 +477,10 @@ impl Render for WhatsNew {
                 .border_t_1()
                 .border_color(rgb(0x373b44))
                 .pt_2()
-                .child(div().w(px(250.)).text_sm().child(package.name.clone()))
+                .child(div().flex_1().text_sm().child(package.name.clone()))
                 .child(
                     div()
-                        .w(px(230.))
+                        .flex_1()
                         .text_sm()
                         .text_color(rgb(ACCENT))
                         .child(format!("{}  →  {}", package.old, package.new)),
@@ -499,7 +504,8 @@ impl Render for WhatsNew {
                 .text_color(rgb(MUTED))
                 .child("Pacman packages do not provide a standard changelog field. Upstream links are best-effort; the Omarchy commit comparison is exact."),
         );
-        content = content.child(package_card);
+        updates_columns = updates_columns.child(div().flex_1().child(package_card));
+        content = content.child(updates_columns);
 
         if !review.notice.is_empty() {
             content = content.child(

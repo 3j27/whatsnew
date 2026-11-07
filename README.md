@@ -2,6 +2,8 @@
 
 A small GPUI/Rust desktop preview of Omarchy and Arch package updates. Refresh reads the installed Omarchy version, runs `checkupdates` to list pending package version changes, and (when the Omarchy package version embeds source revisions) fetches the corresponding commit titles from GitHub. The update button opens the normal `omarchy-update` flow in Omarchy’s floating terminal; it does not bypass the usual confirmation.
 
+![What’s New app screenshot](assets/screenshot.png)
+
 ## Build and run
 
 ```sh
